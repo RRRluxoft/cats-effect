@@ -7,7 +7,7 @@ import scala.io.StdIn
 object IOIntroduction {
 
   // IO
-  val ourFirstIO: IO[Int] = IO.pure(42) // arg that should not have side effects
+  val ourFirstIO: IO[Int] = IO.pure[Int](42) // arg that should not have side effects
   val aDelayedIO: IO[Int] = IO.delay {
     println("I'm producing an integer")
     54
@@ -22,27 +22,37 @@ object IOIntroduction {
   val improvedMeaningOfLife = ourFirstIO.map(_ * 2)
   val printedMeaningOfLife = ourFirstIO.flatMap(mol => IO.delay(println(mol)))
 
-  def smallProgram(): IO[Unit] = for {
-    line1 <- IO(StdIn.readLine())
-    line2 <- IO(StdIn.readLine())
-    _ <- IO.delay(println(line1 + line2))
-  } yield ()
+  def smallProgram(): IO[Unit] =
+    for {
+      line1 <- IO.apply(StdIn.readLine())
+      line2 <- IO.delay(StdIn.readLine())
+      _     <- IO.delay(println(line1 + line2))
+    } yield ()
 
   // mapN - combine IO effects as tuples
-  import cats.syntax.apply._
-  val combinedMeaningOfLife: IO[Int] = (ourFirstIO, improvedMeaningOfLife).mapN(_ + _)
-  def smallProgram_v2(): IO[Unit] =
-    (IO(StdIn.readLine()), IO(StdIn.readLine())).mapN(_ + _).map(println)
+  import cats.syntax.apply.*
 
+  val combinedMeaningOfLife: IO[Int] =
+    (ourFirstIO, ourFirstIO, improvedMeaningOfLife)
+      .mapN(_ + _ + _)
+
+  def smallProgram_v2(): IO[Unit] =
+    (IO(StdIn.readLine()), IO(StdIn.readLine()))
+      .mapN(_ + _)
+      .map(println)
 
   /**
-   * Exercises
-   */
+    * Exercises
+    */
 
   // 1 - sequence two IOs and take the result of the LAST one
   // hint: use flatMap
   def sequenceTakeLast[A, B](ioa: IO[A], iob: IO[B]): IO[B] =
-    ioa.flatMap(_ => iob)
+//    ioa.flatMap(_ => iob)
+    for {
+      _ <- ioa
+      b <- iob
+    } yield b
 
   def sequenceTakeLast_v2[A, B](ioa: IO[A], iob: IO[B]): IO[B] =
     ioa *> iob // "andThen"
@@ -97,23 +107,31 @@ object IOIntroduction {
 
   def sumIO(n: Int): IO[Int] =
     if (n <= 0) IO(0)
-    else for {
-      lastNumber <- IO(n)
-      prevSum <- sumIO(n - 1)
-    } yield prevSum + lastNumber
+    else
+      for {
+        lastNumber <- IO(n)
+        prevSum    <- sumIO(n - 1)
+      } yield prevSum + lastNumber
 
   // 7 (hard) - write a fibonacci IO that does NOT crash on recursion
   // hints: use recursion, ignore exponential complexity, use flatMap heavily
   def fibonacci(n: Int): IO[BigInt] =
     if (n < 2) IO(1)
-    else for {
-      last <- IO.defer(fibonacci(n - 1)) // same as .delay(...).flatten
-      prev <- IO.defer(fibonacci(n - 2))
-    } yield last + prev
+    else
+      for {
+        last <- IO.defer(fibonacci(n - 1)) // same as .delay(...).flatten
+        prev <- IO.delay(fibonacci(n - 2)).flatten // .flatten same as .flatMap(x => x)
+      } yield last + prev
 
   def main(args: Array[String]): Unit = {
     import cats.effect.unsafe.implicits.global // "platform"
+//    smallProgram().unsafeRunSync()
     // "end of the world"
-    (1 to 100).foreach(i => println(fibonacci(i).unsafeRunSync()))
+//    (1 to 100).foreach(i => println(fibonacci(i).unsafeRunSync()))
+
+    println(aDelayedIO_v2.unsafeRunSync())
+
+//    println(ourFirstIO.unsafeRunSync())
+    println(sumIO(20000).unsafeRunSync())
   }
 }
