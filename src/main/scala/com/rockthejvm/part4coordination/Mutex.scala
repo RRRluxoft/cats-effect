@@ -1,20 +1,18 @@
 package com.rockthejvm.part4coordination
 
 import cats.effect
+import cats.effect.{Concurrent, IO, IOApp, Ref}
 import cats.effect.kernel.Deferred
 import cats.effect.kernel.Outcome.{Canceled, Errored, Succeeded}
-import cats.effect.{IO, IOApp, Ref, Concurrent}
-
-import scala.util.Random
-import scala.concurrent.duration._
-import com.rockthejvm.utils._
-import cats.syntax.parallel._
+import cats.effect.syntax.monadCancel.*
+import cats.syntax.flatMap.*
+import cats.syntax.functor.*
+import cats.syntax.parallel.*
+import com.rockthejvm.utils.*
 
 import scala.collection.immutable.Queue
-
-import cats.syntax.flatMap._
-import cats.syntax.functor._
-import cats.effect.syntax.monadCancel._
+import scala.concurrent.duration.*
+import scala.util.Random
 
 abstract class Mutex {
   def acquire: IO[Unit]
@@ -23,28 +21,30 @@ abstract class Mutex {
 
 object Mutex {
   type Signal = Deferred[IO, Unit]
+
   case class State(locked: Boolean, waiting: Queue[Signal])
-  val unlocked = State(locked = false, Queue())
+
+  val unlocked: State = State(locked = false, Queue())
 
   def createSignal(): IO[Signal] = Deferred[IO, Unit]
 
-  def create: IO[Mutex] = Ref[IO].of(unlocked).map(createMutexWithCancellation)
+  def create: IO[Mutex] = Ref[IO].of(unlocked).map(e => createMutexWithCancellation(e))
 
   def createMutexWithCancellation(state: Ref[IO, State]): Mutex =
     new Mutex {
       override def acquire = IO.uncancelable { poll =>
         createSignal().flatMap { signal =>
 
-          val cleanup = state.modify {
+          val cleanup: IO[Unit] = state.modify {
             case State(locked, queue) =>
               val newQueue = queue.filterNot(_ eq signal)
-              State(locked, newQueue) -> release
+              (State(locked, newQueue), release)
           }.flatten
 
           state.modify {
-            case State(false, _) => State(locked = true, Queue()) -> IO.unit
-            case State(true, queue) => State(locked = true, queue.enqueue(signal)) -> poll(signal.get).onCancel(cleanup)
-          }.flatten // modify returns IO[B], our B is IO[Unit], so modify returns IO[IO[Unit]], we need to flatten
+            case State(false, _) => (State(true, Queue()), IO.unit)
+            case State(true, queue) => (State(true, queue.enqueue(signal)), poll(signal.get).onCancel(cleanup))
+          }
         }
       }
 
@@ -148,7 +148,28 @@ object MutexPlayground extends IOApp.Simple {
     _ <- IO(s"[task $id] got result: $res").debug
   } yield res
 
-  def demoNonLockingTasks(): IO[List[Int]] = (1 to 10).toList.parTraverse(id => createNonLockingTask(id))
+  def demoNonLockingTasks(): IO[List[Int]] =
+    (1 to 10)
+      .toList
+      .parTraverse(id =>
+        createNonLockingTask(id)
+      )
+
+  def createLockingTask_my(id: Int, mutex: Mutex): IO[Int] = for {
+    _ <- IO(s"[task $id] waiting for permission...").debug
+    // !!!
+    _ <- mutex.acquire
+    res <- criticalTask()
+    _ <- IO(s"[task $id] got result: $res").debug
+    // !!!
+    _ <- mutex.release
+    _ <- IO(s"[task $id] lock removed.").debug
+  } yield res
+
+  def demoLockingTasks_my(): IO[List[Int]] = for {
+    mutex <- Mutex.create
+    results <- (1 to 10).toList.parTraverse(id => createLockingTask_my(id, mutex))
+  } yield results
 
   def createLockingTask(id: Int, mutex: MutexV2[IO]): IO[Int] = for {
     _ <- IO(s"[task $id] waiting for permission...").debug
@@ -187,5 +208,8 @@ object MutexPlayground extends IOApp.Simple {
     results <- (1 to 10).toList.parTraverse(id => createCancellingTask(id, mutex))
   } yield results
 
-  override def run = demoCancellingTasks().debug.void
+  override def run =
+//    demoNonLockingTasks().debug.void
+    demoLockingTasks().debug.void
+//    demoCancellingTasks().debug.void
 }
